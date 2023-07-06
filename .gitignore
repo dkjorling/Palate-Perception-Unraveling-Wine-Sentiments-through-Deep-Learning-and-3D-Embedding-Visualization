@@ -1,3 +1,7 @@
 *.pyc
 *.ipynb
+*.yml
+__pycache__/
+.ipynb_checkpoints/
 venv/
+data/
