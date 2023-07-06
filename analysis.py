@@ -5,7 +5,9 @@ import tensorflow as tf
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from transformers import GPT2Tokenizer, GPT2Config, GPT2LMHeadModel
+from sklearn.metrics.pairwise import cosine_similarity
 
+import data_clean as dc
 
 
 def get_token_dict(text_col):
@@ -147,7 +149,6 @@ def generate_review(kind='red_pos', rand=False):
     print(output)
     return kind, output
 
-
 def drop_bos(text):
     """
     Formate real reviews back by removing bos token
@@ -156,6 +157,7 @@ def drop_bos(text):
     clean = clean[1:]
     clean = " ".join(clean)
     return clean
+
 def clean_punct(text):
     """
     Format real reviews back by stripping space before punctuation
@@ -166,3 +168,123 @@ def clean_punct(text):
     clean = re.sub(r"\s+\?", "?", clean)
     return clean
 
+def get_descriptive_word_scores(category='w1'):
+    """
+    Get average positive and negative cosine similarity scores for descriptors and wine types in category
+    """
+    # load word dict
+    with open('data/words.json', 'r') as f:
+        word_dict = json.load(f)
+    # load pos and neg words
+    pos_words = word_dict['pos_words']
+    neg_words = word_dict['neg_words']
+    
+    # set list of descriptive words and wine type based on category
+    if category[0] == 'w':
+        descriptive_words = word_dict['white_words']
+        wine_types = word_dict['white_types']
+    else:
+        descriptive_words = word_dict['red_words']
+        wine_types = word_dict['red_types']
+        
+    # load embeddings into csv
+    base = 'data/word_vecs/'
+    word_file = base + 'meta_{}.tsv'.format(category)
+    embedding_file = base + 'vecs_{}.tsv'.format(category)
+    words = pd.read_csv(word_file, sep='\t', header=None)
+    embeddings = pd.read_csv(embedding_file, sep='\t', header=None)
+    embeddings.index = list(words[0].values)
+    
+    # set positive and negative word matrices
+    pos_reference = embeddings.loc[pos_words].values
+    neg_reference = embeddings.loc[neg_words].values
+    
+    # get avg cosine similarity for types
+    pos_wine_type = []
+    neg_wine_type = []
+    for var in wine_types:
+        vec = embeddings.loc[var].values.reshape(1, -1)
+        pos_scores = cosine_similarity(vec, pos_reference)
+        pos_wine_type.append(np.mean(pos_scores))
+        neg_scores = cosine_similarity(vec, neg_reference)
+        neg_wine_type.append(np.mean(neg_scores))
+    
+    pos_descriptor = []
+    neg_descriptor = []
+    drop_descriptor = []
+    for word in descriptive_words:
+        try:
+            vec = embeddings.loc[word].values.reshape(1, -1)
+            pos_scores = cosine_similarity(vec, pos_reference)
+            pos_descriptor.append(np.mean(pos_scores))
+            neg_scores = cosine_similarity(vec, neg_reference)
+            neg_descriptor.append(np.mean(neg_scores))
+        except:
+            print("Word not in subset")
+            drop_descriptor.append(word)
+    
+    # drop words not in set
+    for word in drop_descriptor:
+        descriptive_words.remove(word)
+    # create a dataframes for both wine type and descriptive words and return
+    wine_type_sentiment = pd.DataFrame(data={'pos':pos_wine_type,
+                                             'neg':neg_wine_type},
+                                       index=wine_types)   
+    descriptor_sentiment = pd.DataFrame(data={'pos':pos_descriptor,
+                                             'neg':neg_descriptor},
+                                       index=descriptive_words)
+    
+    # add columns to indicate data subset and sort on positive
+    wine_type_sentiment['subset'] = category
+    wine_type_sentiment = wine_type_sentiment.sort_values('pos', ascending=False)
+    descriptor_sentiment['subset'] = category
+    descriptor_sentiment = descriptor_sentiment.sort_values('pos', ascending=False)
+    
+    return wine_type_sentiment, descriptor_sentiment
+
+def plot_top_n_words(color='red', cat=1, kind='des', pos_neg='pos', n=20):
+    """
+    Plot top n words by positive or negative average cosine simlarity in descending order
+    Parameters
+    -color: red or white wine
+    -cat: 1, 2, 3 for price ranges (cheap, medium, expensive)
+    -pos_neg: positive or negative cosine similarity
+    -n: number of words to plot
+    """
+    plt.rcParams['font.family'] = 'Helvetica'
+    file = "data/visualizations/" + color + "_" + kind + ".csv"
+    df = pd.read_csv(file, index_col=0)
+    col = str('{}_{}{}'.format(pos_neg, color[:1], str(cat)))
+    df = df.sort_values(col, ascending=False)
+    # plot figure
+    sns.set_style("ticks")
+    plt.figure(figsize=(10, 6))
+
+    # Create a color palette with a gradient of red colors
+    if color=='red':
+        palette = sns.color_palette("Reds_r", n)
+    else:
+        palette = sns.color_palette("YlOrBr", n)
+    
+    # automate title
+    if pos_neg == 'pos':
+        p = 'Positive'
+    else:
+        p = 'Negative'
+    if kind == 'des':
+        k = 'Descriptors'
+    else:
+        k = 'Wine Types'
+    if cat == 1:
+        r = '< \$15'
+    elif cat == 2:
+        r = '\$15-$35'
+    else:
+        r = '\$35-$80'
+    c = color.capitalize()
+    title = "Top {} Polarity {}: {} {} Wine".format(p, k, r, c)
+    sns.barplot(x=list(df.index)[:n], y=df[col][:n], palette=palette)
+    plt.ylabel('Polarity Score')
+    plt.title(title)
+    plt.xticks(rotation=45)
+    plt.show()
